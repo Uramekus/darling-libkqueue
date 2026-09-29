@@ -83,12 +83,15 @@ evfilt_socket_knote_create(struct filter *filt, struct knote *kn)
     ev.events = kn->data.events;
     ev.data.ptr = kn;
 
-    /* Duplicate the fd to workaround epoll's poor design */
-	kn->kdata.kn_dupfd = _dup_4libkqueue(kn->kev.ident);
+	kn->kdata.kn_dupfd = kn->kev.ident;
 
 	if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_ADD, kn->kdata.kn_dupfd, &ev) < 0) {
-		dbg_printf("epoll_ctl(2): %s", strerror(errno));
-		return (-1);
+		if (errno == EEXIST) {
+			epoll_ctl(kn->kn_epollfd, EPOLL_CTL_MOD, kn->kdata.kn_dupfd, &ev);
+		} else {
+			dbg_printf("epoll_ctl(2): %s", strerror(errno));
+			return (-1);
+		}
 	}
     return 0;
 }
@@ -121,21 +124,11 @@ evfilt_socket_knote_modify(struct filter *filt, struct knote *kn,
 int
 evfilt_socket_knote_delete(struct filter *filt, struct knote *kn)
 {
-    if (kn->kev.flags & EV_DISABLE)
-    {
-        (void) __close_for_kqueue(kn->kdata.kn_dupfd);
-        kn->kdata.kn_dupfd = -1;
-        return (0);
-    }
-    else {
-        if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_DEL, kn->kdata.kn_dupfd, NULL) < 0) {
-            dbg_perror("epoll_ctl(2)");
-            return (-1);
-        }
-        (void) __close_for_kqueue(kn->kdata.kn_dupfd);
-        kn->kdata.kn_dupfd = -1;
-		return 0;
+	if (kn->kn_epollfd >= 0 && kn->kdata.kn_dupfd >= 0) {
+		epoll_ctl(kn->kn_epollfd, EPOLL_CTL_DEL, kn->kdata.kn_dupfd, NULL);
 	}
+	kn->kdata.kn_dupfd = -1;
+	return 0;
 }
 
 int

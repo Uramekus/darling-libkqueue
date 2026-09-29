@@ -126,12 +126,14 @@ evfilt_read_copyout(struct kevent64_s *dst, struct knote *src, void *ptr)
         /* On return, data contains the number of bytes of protocol
            data available to read.
          */
-        if (ioctl(dst->ident, FIONREAD, &dst->data) < 0) {
+        int nbytes = 0;
+        if (ioctl(dst->ident, FIONREAD, &nbytes) < 0) {
             /* race condition with socket close, so ignore this error */
             dbg_puts("ioctl(2) of socket failed");
             dst->data = 0;
         } else {
-            if (dst->data == 0)
+            dst->data = nbytes;
+            if (nbytes == 0)
                 dst->flags |= EV_EOF;
         }
     }
@@ -187,11 +189,14 @@ evfilt_read_knote_create(struct filter *filt, struct knote *kn)
         return (0);
     }
     else {
-        kn->kdata.kn_dupfd = _dup_4libkqueue(kn->kev.ident);
-        fcntl(kn->kdata.kn_dupfd, F_SETFD, FD_CLOEXEC);
+        kn->kdata.kn_dupfd = kn->kev.ident;
         if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_ADD, kn->kdata.kn_dupfd, &ev) < 0) {
-            dbg_printf("epoll_ctl(2): %s", strerror(errno));
-            return (-1);
+            if (errno == EEXIST) {
+                epoll_ctl(kn->kn_epollfd, EPOLL_CTL_MOD, kn->kdata.kn_dupfd, &ev);
+            } else {
+                dbg_printf("epoll_ctl(2): %s", strerror(errno));
+                return (-1);
+            }
         }
     }
 
@@ -231,7 +236,6 @@ evfilt_read_knote_delete(struct filter *filt, struct knote *kn)
 {
     if (kn->kev.flags & EV_DISABLE)
     {
-        (void) __close_for_kqueue(kn->kdata.kn_dupfd);
         kn->kdata.kn_dupfd = -1;
         return 0;
     }
@@ -244,11 +248,7 @@ evfilt_read_knote_delete(struct filter *filt, struct knote *kn)
         (void) __close_for_kqueue(kn->kdata.kn_eventfd);
         kn->kdata.kn_eventfd = -1;
     } else {
-        if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_DEL, kn->kdata.kn_dupfd, NULL) < 0) {
-            dbg_perror("epoll_ctl(2)");
-            return (-1);
-        }
-        (void) __close_for_kqueue(kn->kdata.kn_dupfd);
+        epoll_ctl(kn->kn_epollfd, EPOLL_CTL_DEL, kn->kdata.kn_dupfd, NULL);
         kn->kdata.kn_dupfd = -1;
     }
 
